@@ -15,7 +15,11 @@ export interface Template {
   /** Parsed original request body. */
   body: Record<string, unknown>;
   pageSize: number;
+  /** Identifies the effective search (see run-setup.ts). */
   searchKey: string;
+  presetId: string | null;
+  /** Preset runs own resultSessionId: null on the first request, then whatever the server returned. */
+  managedSession: boolean;
 }
 
 /** How to authenticate. Memory-only, read fresh for every request. */
@@ -37,6 +41,18 @@ export interface RunOptions {
   maxPages: number | null;
   knownIds: Iterable<number>;
   usage: Usage | null;
+  /** Session returned by an earlier request of this run (resume only). */
+  resultSessionId?: string | null;
+  /** After page 1, pause for confirmation if the pages still needed exceed the daily budget. */
+  gate?: boolean;
+}
+
+/** Statuses that mean the server did not accept the request itself (e.g. a dead session). */
+const SESSION_REJECTED = new Set([400, 404, 409, 410, 422]);
+
+interface Session {
+  id: string | null;
+  fallbackUsed: boolean;
 }
 
 class FatalError extends Error {}
@@ -76,6 +92,7 @@ function retryAfterMs(res: Response): number | null {
 export class Collector {
   private ctl: AbortController | null = null;
   private runId: string | null = null;
+  private proceedGate: ((maxPages: number | null) => void) | null = null;
 
   constructor(
     private readonly fetchFn: typeof fetch,
@@ -92,10 +109,16 @@ export class Collector {
     if (this.ctl && this.runId === runId) this.ctl.abort();
   }
 
+  /** Answers a `gate` message: carry on, capped at maxPages total pages (null = no cap). */
+  proceed(runId: string, maxPages: number | null): void {
+    if (this.runId === runId) this.proceedGate?.(maxPages);
+  }
+
   /** Returns the last usage seen so the caller can keep its pre-flight numbers fresh. */
   async run(tpl: Template, opts: RunOptions): Promise<Usage | null> {
     if (this.ctl) throw new Error('A run is already in progress');
-    const { runId, maxPages } = opts;
+    const { runId } = opts;
+    let maxPages = opts.maxPages;
     const ctl = new AbortController();
     this.ctl = ctl;
     this.runId = runId;
@@ -111,6 +134,8 @@ export class Collector {
     let reason: DoneReason = 'complete';
     let message: string | undefined;
     let needsReauth = false;
+    let gated = !opts.gate;
+    const session: Session = { id: opts.resultSessionId ?? null, fallbackUsed: false };
 
     const progress = (state: 'fetching' | 'waiting' | 'retrying' | 'paused', waitMs: number) =>
       this.emit({
@@ -123,6 +148,7 @@ export class Collector {
         waitMs,
         tokens: usage?.userTokensRemaining ?? null,
         dailyRemaining: usage?.dailyRemaining ?? null,
+        sessionId: session.id,
       });
 
     try {
@@ -146,7 +172,7 @@ export class Collector {
 
         const tokensBefore = usage?.userTokensRemaining ?? null;
         progress('fetching', 0);
-        const res = await this.fetchPage(tpl, startRow, {
+        const res = await this.fetchPage(tpl, startRow, session, runId, {
           retry: (ms) => {
             progress('retrying', ms);
             return sleep(ms, ctl.signal);
@@ -161,6 +187,7 @@ export class Collector {
 
         usage = res.usage ?? usage;
         total = res.count;
+        if (tpl.managedSession && res.resultSessionId) session.id = res.resultSessionId;
         const fresh: PuRecord[] = [];
         for (const row of res.rows) {
           const rec = toRecord(row);
@@ -198,6 +225,23 @@ export class Collector {
           `wait=${wait}ms t+${((Date.now() - started) / 1000).toFixed(1)}s`,
         );
 
+        if (more && !gated) {
+          // The first page is the count preview: it shows the true size of this list.
+          const left = Math.ceil(res.count / tpl.pageSize) - page;
+          const daily = usage?.dailyRemaining ?? null;
+          if (daily !== null && left > daily) {
+            const answer = this.awaitProceed(ctl.signal);
+            this.emit({ type: 'gate', runId, page, count: res.count, pagesLeft: left, dailyRemaining: daily });
+            const cap = await answer;
+            if (ctl.signal.aborted) {
+              reason = 'stopped';
+              break;
+            }
+            maxPages = cap;
+          }
+        }
+        gated = true;
+
         if (!more) {
           if (ctl.signal.aborted) reason = 'stopped';
           else if (res.rows.length > 0 && seen.size < res.count && startRow < res.totalRows) reason = 'daily-limit';
@@ -232,6 +276,7 @@ export class Collector {
         total,
         nextStartRow: startRow,
         searchKey: tpl.searchKey,
+        sessionId: session.id,
         dailyRemaining: usage?.dailyRemaining ?? null,
       });
       return usage;
@@ -248,14 +293,34 @@ export class Collector {
     return usage;
   }
 
+  private awaitProceed(signal: AbortSignal): Promise<number | null> {
+    return new Promise((resolve) => {
+      const done = (v: number | null) => {
+        this.proceedGate = null;
+        signal.removeEventListener('abort', onAbort);
+        resolve(v);
+      };
+      const onAbort = () => done(null);
+      this.proceedGate = done;
+      if (signal.aborted) onAbort();
+      else signal.addEventListener('abort', onAbort);
+    });
+  }
+
   private async fetchPage(
     tpl: Template,
     startRow: number,
+    session: Session,
+    runId: string,
     hooks: { retry: (ms: number) => Promise<void>; gate: () => Promise<void> },
   ): Promise<ParsedResponse> {
-    const body = JSON.stringify({ ...tpl.body, startRow, endRow: startRow + tpl.pageSize });
-
     for (let attempt = 0; ; attempt++) {
+      const body = JSON.stringify({
+        ...tpl.body,
+        ...(tpl.managedSession ? { resultSessionId: session.id } : {}),
+        startRow,
+        endRow: startRow + tpl.pageSize,
+      });
       let res: Response | null = null;
       try {
         const auth = this.getAuth(); // freshest headers at send time
@@ -282,6 +347,21 @@ export class Collector {
       }
 
       if (res && (res.status === 401 || res.status === 403)) throw new AuthError();
+
+      if (
+        res &&
+        tpl.managedSession &&
+        session.id !== null &&
+        !session.fallbackUsed &&
+        SESSION_REJECTED.has(res.status)
+      ) {
+        // The saved session is gone. Start a new one at the same row; dedupe absorbs any overlap.
+        session.id = null;
+        session.fallbackUsed = true;
+        this.emit({ type: 'notice', runId, code: 'session_reset' });
+        debug('result session rejected: continuing with a new one');
+        continue;
+      }
 
       const retryable = res === null || res.status === 429 || res.status >= 500;
       if (!retryable) throw new FatalError(`Request failed with HTTP ${res?.status}`);

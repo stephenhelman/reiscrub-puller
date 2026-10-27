@@ -4,6 +4,7 @@ import { openIsolatedChannel } from '@/src/bridge';
 import { debug } from '@/src/debug';
 import { buildPayload } from '@/src/payload';
 import { DataMessageSchema, RecordSchema } from '@/src/schemas';
+import { getPreset } from '@/src/presets';
 import { createRunStore } from '@/src/session-store';
 import type { Command, DoneReason, PuRecord, StoredRun } from '@/src/types';
 import { mountPanel, type Confirm } from '@/src/panel/view';
@@ -30,6 +31,10 @@ export default defineContentScript({
     let watchdog: ReturnType<typeof setTimeout> | null = null;
     // Set once a new search is captured after the run parked in needs_reauth.
     let freshCapture: { searchKey: string } | null = null;
+    // List type chosen in the panel (null preset = the user's own DealMachine filters).
+    let selection: { presetId: string | null; excluded: Set<number> } = { presetId: null, excluded: new Set() };
+    // Appended to progress statuses once something worth telling the user happened mid-run.
+    let notice = '';
 
     const store = await createRunStore();
     const isRunning = () => run?.state === 'running';
@@ -38,6 +43,7 @@ export default defineContentScript({
     };
     const searchMatches = () =>
       !run?.searchKey || !freshCapture || freshCapture.searchKey === run.searchKey;
+    const selectLocked = () => run?.state === 'running' || run?.state === 'needs_reauth';
     const canResume = () =>
       run?.state === 'needs_reauth' && freshCapture !== null && searchMatches() && run.nextStartRow >= 0;
 
@@ -48,10 +54,17 @@ export default defineContentScript({
     }
 
     function render(): void {
-      const pagesNeeded = captured ? Math.ceil(captured.count / captured.pageSize) : null;
+      const preset = getPreset(selection.presetId);
+      // A preset's count is unknown until its first page is fetched; the user's own search is known.
+      const count = preset
+        ? run && run.presetId === preset.id && run.total > 0
+          ? run.total
+          : null
+        : (captured?.count ?? null);
+      const pagesNeeded = captured && count !== null ? Math.ceil(count / captured.pageSize) : null;
       panel.update({
         captured: captured !== null,
-        count: captured ? captured.count : null,
+        count,
         pagesNeeded,
         dailyRemaining: captured ? captured.dailyRemaining : null,
         running: isRunning(),
@@ -63,8 +76,19 @@ export default defineContentScript({
         canResume: canResume(),
         canClear: run !== null,
         confirm,
+        listType: preset?.id ?? null,
+        listTypeLocked: selectLocked(),
+        presetDescription: preset?.description ?? null,
+        presetFilters: (preset?.filters ?? []).map((f) => ({
+          id: f.filterId,
+          label: f.label,
+          checked: !selection.excluded.has(f.filterId),
+        })),
+        countPending: preset !== null && count === null,
       });
     }
+
+    const syncSelection = () => send({ type: 'select', presetId: selection.presetId, excluded: [...selection.excluded] });
 
     function ask(c: Omit<Confirm, 'onCancel'> & { onCancel?: () => void }): void {
       confirm = {
@@ -126,6 +150,15 @@ export default defineContentScript({
       if (m.type === 'captured') {
         if (isRunning()) return;
         if (m.pageSize < 1) return;
+        // The search key is for the page script's selection; make it match ours before using it.
+        const same =
+          m.presetId === selection.presetId &&
+          m.excluded.length === selection.excluded.size &&
+          m.excluded.every((id) => selection.excluded.has(id));
+        if (!same) {
+          syncSelection();
+          return;
+        }
         captured = { count: m.count, pageSize: m.pageSize, dailyRemaining: m.dailyRemaining };
         if (run?.state === 'needs_reauth') {
           freshCapture = { searchKey: m.searchKey };
@@ -153,21 +186,52 @@ export default defineContentScript({
           if (rec.data.line1.startsWith('APN:')) apnOnly += 1;
         }
         persist();
+      } else if (m.type === 'gate') {
+        run.total = m.count;
+        const runId = run.runId;
+        const pages = m.page + m.pagesLeft;
+        status = 'Waiting for your choice…';
+        ask({
+          message: `This list has ${m.count.toLocaleString()} results (${pages.toLocaleString()} pages) but only ${m.dailyRemaining.toLocaleString()} remain today.`,
+          confirmLabel: 'Collect what I can',
+          cancelLabel: 'Cancel',
+          onConfirm: () => {
+            const cap = m.page + m.dailyRemaining;
+            if (run && run.runId === runId) {
+              run.maxPages = cap;
+              persist();
+            }
+            status = 'Collecting…';
+            send({ type: 'proceed', runId, maxPages: cap });
+          },
+          onCancel: () => {
+            status = 'Stopping…';
+            send({ type: 'stop', runId });
+          },
+        });
+        persist();
+        return;
+      } else if (m.type === 'notice') {
+        notice = ' Search session expired; restarted from the saved row.';
+        status = notice.trim();
       } else if (m.type === 'progress') {
         run.page = m.page;
         run.total = m.total;
+        run.resultSessionId = m.sessionId;
         if (captured) captured.dailyRemaining = m.dailyRemaining;
         const secs = (m.waitMs / 1000).toFixed(1);
         if (m.state === 'fetching') status = `Fetching page ${m.page + 1}…`;
         else if (m.state === 'waiting') status = `Waiting ${secs}s before next page…`;
         else if (m.state === 'paused') status = 'Paused — return to this tab to continue';
         else status = `Server pushed back. Retrying in ${secs}s…`;
+        status += notice;
       } else if (m.type === 'needs_reauth') {
         run.state = 'needs_reauth';
         run.page = m.page;
         run.total = m.total;
         run.nextStartRow = m.nextStartRow;
         run.searchKey = m.searchKey;
+        run.resultSessionId = m.sessionId;
         freshCapture = null;
         if (captured) captured.dailyRemaining = m.dailyRemaining;
         status = REAUTH_STATUS;
@@ -193,19 +257,24 @@ export default defineContentScript({
         records: [],
         copied: false,
         state: 'running',
-        total: captured?.count ?? 0,
+        // A preset's count arrives with its first page.
+        total: selection.presetId === null ? (captured?.count ?? 0) : 0,
         page: 0,
         maxPages,
         nextStartRow: 0,
+        presetId: selection.presetId,
+        excluded: [...selection.excluded],
+        resultSessionId: null,
       });
       freshCapture = null;
+      notice = '';
       persist();
       status = 'Starting…';
       watchdog = setTimeout(() => {
         finish('error', 'page script did not respond; reload the DealMachine tab');
         render();
       }, WATCHDOG_MS);
-      send({ type: 'start', runId, maxPages });
+      send({ type: 'start', runId, maxPages, presetId: selection.presetId, excluded: [...selection.excluded] });
       render();
     }
 
@@ -218,7 +287,8 @@ export default defineContentScript({
         render();
         return;
       }
-      if (daily !== null && pages > daily) {
+      // Preset runs check the budget themselves once their first page has revealed the count.
+      if (selection.presetId === null && daily !== null && pages > daily) {
         ask({
           message: `This search needs ${pages.toLocaleString()} pages but only ${daily.toLocaleString()} remain today.`,
           confirmLabel: 'Collect what I can',
@@ -271,6 +341,9 @@ export default defineContentScript({
         maxPages: run.maxPages,
         searchKey: run.searchKey ?? null,
         ids: [...ids],
+        presetId: run.presetId,
+        excluded: run.excluded,
+        resultSessionId: run.resultSessionId,
       });
       persist();
       render();
@@ -325,12 +398,26 @@ export default defineContentScript({
         send({ type: 'stop', runId: run.runId });
         render();
       },
+      onSelectPreset(id) {
+        if (selectLocked()) return;
+        selection = { presetId: id, excluded: new Set() };
+        syncSelection();
+        render();
+      },
+      onToggleFilter(filterId, checked) {
+        if (selectLocked()) return;
+        if (checked) selection.excluded.delete(filterId);
+        else selection.excluded.add(filterId);
+        syncSelection();
+        render();
+      },
       onCopy: () => void onCopy(),
       onClear() {
         if (isRunning()) return;
         adopt(null);
         void store.clear();
         freshCapture = null;
+        notice = '';
         status = 'Cleared.';
         render();
       },
@@ -344,6 +431,8 @@ export default defineContentScript({
         // The MAIN-world loop died with the page; keep what we have.
         finish('error', 'the page was reloaded mid-run');
       } else if (saved.state === 'needs_reauth') {
+        // A parked run resumes with the list type it started with.
+        selection = { presetId: saved.presetId, excluded: new Set(saved.excluded) };
         status = REAUTH_STATUS;
       } else {
         status = `Restored ${saved.records.length.toLocaleString()} records from this session.`;

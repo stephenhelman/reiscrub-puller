@@ -7,6 +7,8 @@ export interface ParsedResponse {
   pageSize: number | null;
   rows: unknown[];
   usage: Usage | null;
+  /** Server-side search session, to be echoed on later pages. */
+  resultSessionId: string | null;
 }
 
 function isObj(v: unknown): v is Record<string, unknown> {
@@ -37,5 +39,12 @@ export function parseSearchResponse(json: unknown): ParsedResponse | null {
     };
   }
 
-  return { count, totalRows, pageSize: numOrNull(json.pageSize), rows: json.rows, usage };
+  return {
+    count,
+    totalRows,
+    pageSize: numOrNull(json.pageSize),
+    rows: json.rows,
+    usage,
+    resultSessionId: typeof json.resultSessionId === 'string' && json.resultSessionId ? json.resultSessionId : null,
+  };
 }

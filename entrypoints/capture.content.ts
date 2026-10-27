@@ -3,12 +3,13 @@
 // replay. Auth headers live only in this closure; they are never logged, stored,
 // or posted anywhere.
 import { openMainChannel } from '@/src/bridge';
-import { Collector, type Auth, type Env, type Template } from '@/src/collector';
+import { Collector, type Auth, type Env } from '@/src/collector';
 import { CONFIG } from '@/src/config';
 import { debug } from '@/src/debug';
 import type { Usage } from '@/src/pacing';
 import { parseSearchResponse } from '@/src/response';
-import { searchKeyOf } from '@/src/searchkey';
+import { getPreset } from '@/src/presets';
+import { buildTemplate, type CapturedTemplate } from '@/src/run-setup';
 import { parseCommand } from '@/src/types';
 
 interface Meta {
@@ -27,7 +28,9 @@ export default defineContentScript({
     const origFetch = window.fetch;
     const boundFetch: typeof fetch = (...a) => origFetch.apply(window, a);
 
-    let template: Template | null = null;
+    let template: CapturedTemplate | null = null;
+    // List type chosen in the panel; decides the effective body and the search key.
+    let selection: { presetId: string | null; excluded: number[] } = { presetId: null, excluded: [] };
     let lastCount = 0;
     let lastUsage: Usage | null = null;
 
@@ -78,8 +81,10 @@ export default defineContentScript({
         const cmd = parseCommand(raw);
         if (!cmd) return;
         if (cmd.type === 'stop') return collector.stop(cmd.runId);
+        if (cmd.type === 'proceed') return collector.proceed(cmd.runId, cmd.maxPages);
+        if (cmd.type === 'select') return select(cmd.presetId, cmd.excluded);
         if (cmd.type === 'resume') return void resumeRun(cmd);
-        void startRun(cmd.runId, cmd.maxPages);
+        void startRun(cmd.runId, cmd.maxPages, cmd.presetId, cmd.excluded);
       },
       () => announceCapture(),
     );
@@ -93,16 +98,36 @@ export default defineContentScript({
 
     function announceCapture(): void {
       if (!template) return;
+      const tpl = buildTemplate(template, selection.presetId, selection.excluded);
+      if (!tpl) return;
       channel.sendData({
         type: 'captured',
         count: lastCount,
         pageSize: template.pageSize,
         dailyRemaining: lastUsage?.dailyRemaining ?? null,
-        searchKey: template.searchKey,
+        searchKey: tpl.searchKey,
+        presetId: selection.presetId,
+        excluded: selection.excluded,
       });
     }
 
-    async function startRun(runId: string, maxPages: number | null): Promise<void> {
+    function select(presetId: string | null, excluded: number[]): void {
+      if (collector.running || (presetId !== null && !getPreset(presetId))) return;
+      const key = JSON.stringify([presetId, [...excluded].sort((a, b) => a - b)]);
+      if (key === JSON.stringify([selection.presetId, [...selection.excluded].sort((a, b) => a - b)])) return;
+      selection = { presetId, excluded };
+      announceCapture();
+    }
+
+    const fail = (runId: string, message: string, collected = 0) =>
+      channel.sendData({ type: 'done', runId, reason: 'error', message, collected, dailyRemaining: null });
+
+    async function startRun(
+      runId: string,
+      maxPages: number | null,
+      presetId: string | null,
+      excluded: number[],
+    ): Promise<void> {
       if (collector.running) return;
       if (!template) {
         channel.sendData({
@@ -115,13 +140,18 @@ export default defineContentScript({
         });
         return;
       }
-      const usage = await collector.run(template, {
+      const tpl = buildTemplate(template, presetId, excluded);
+      if (!tpl) return fail(runId, 'Unknown list type');
+      selection = { presetId, excluded };
+      const usage = await collector.run(tpl, {
         runId,
         startRow: 0,
         page: 0,
         maxPages,
         knownIds: [],
         usage: lastUsage,
+        // A preset's true count is only known after its first page; that page is page 1 of the run.
+        gate: tpl.managedSession,
       });
       lastUsage = usage ?? lastUsage;
     }
@@ -129,20 +159,23 @@ export default defineContentScript({
     /** Continue the same run from a saved row using the freshest template and auth. */
     async function resumeRun(cmd: Extract<NonNullable<ReturnType<typeof parseCommand>>, { type: 'resume' }>): Promise<void> {
       if (collector.running) return;
-      const fail = (message: string) =>
-        channel.sendData({ type: 'done', runId: cmd.runId, reason: 'error', message, collected: cmd.ids.length, dailyRemaining: null });
-      if (!template) return fail('No captured search. Refresh your search first.');
-      if (cmd.searchKey !== null && cmd.searchKey !== template.searchKey) {
+      if (!template) return fail(cmd.runId, 'No captured search. Refresh your search first.', cmd.ids.length);
+      // Same preset and unchecked filters as the run, so the key covers the effective body.
+      const tpl = buildTemplate(template, cmd.presetId, cmd.excluded);
+      if (!tpl) return fail(cmd.runId, 'Unknown list type', cmd.ids.length);
+      if (cmd.searchKey !== null && cmd.searchKey !== tpl.searchKey) {
         channel.sendData({ type: 'resume_refused', runId: cmd.runId });
         return;
       }
-      const usage = await collector.run(template, {
+      selection = { presetId: cmd.presetId, excluded: cmd.excluded };
+      const usage = await collector.run(tpl, {
         runId: cmd.runId,
         startRow: cmd.startRow,
         page: cmd.page,
         maxPages: cmd.maxPages,
         knownIds: cmd.ids,
         usage: lastUsage,
+        resultSessionId: cmd.resultSessionId,
       });
       lastUsage = usage ?? lastUsage;
     }
@@ -179,7 +212,6 @@ export default defineContentScript({
         bodyHeaders: { 'content-type': ct ?? 'application/json' },
         body: b,
         pageSize,
-        searchKey: searchKeyOf(b),
       };
       lastCount = res.count;
       lastUsage = res.usage;

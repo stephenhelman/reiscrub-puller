@@ -1,4 +1,4 @@
-# REIscrub Puller (phase 1)
+# REIscrub Puller (v0.2.0)
 
 Chrome MV3 extension (WXT + TypeScript). On a DealMachine property search it pages through the
 full result set using your own session and copies a deduped address list for REIscrub.
@@ -36,6 +36,20 @@ and the panel reconnect.
 - Records live in `chrome.storage.session`, keyed per tab (cleared when the browser session ends or the tab closes). Nothing else
   is persisted. Auth headers stay in page memory and are never stored, logged, or copied.
 
+## List type (presets)
+
+The **List type** select above Collect defaults to *My DealMachine filters* (replays your search as-is).
+Choosing a built-in preset (currently *Cash Buyers*) starts from the preset's filters and merges your
+on-screen DealMachine filters into them: a filter with the same `filterId` replaces the preset's, any
+other is added. Untick a preset filter in the panel to leave it out. Location and every other key come
+from your search. Presets are bundled in `src/presets.ts` and validated by `pnpm test`.
+
+For presets the true count is only known once the first page is fetched, so **Collect**'s first page is
+the preview (it is kept as page 1). If the pages still needed exceed today's budget you are asked
+before it continues. The server-side search session is reused on Resume; if the server rejects it the
+run restarts a session from the saved row and dedupes the overlap. The list type can't be changed
+while a run is running or parked for re-auth.
+
 ## DEBUG flag
 
 Logs page number, rows received, `userTokensRemaining` before -> after, and wait time per page
@@ -48,7 +62,7 @@ Messages appear in the page console with the prefix `[reiscrub]`. Headers and co
 
 ## Scripts
 
-`pnpm wxt build` · `pnpm typecheck` (`tsc --noEmit`) · `pnpm dev`
+`pnpm wxt build` · `pnpm typecheck` (`tsc --noEmit`) · `pnpm test` (vitest) · `pnpm dev`
 
 ## Layout
 

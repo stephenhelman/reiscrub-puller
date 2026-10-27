@@ -3,6 +3,8 @@ import { CONFIG } from './config';
 
 const num = z.number().finite().min(0).max(1e9);
 const usageNum = num.nullable();
+const sessionId = z.string().max(200).nullable();
+const excludedIds = z.array(z.number().int().safe()).max(100);
 
 export const RecordSchema = z.object({
   id: z.number().int().safe(),
@@ -20,6 +22,9 @@ export const DataMessageSchema = z.discriminatedUnion('type', [
     pageSize: num,
     dailyRemaining: usageNum,
     searchKey: z.string().max(64),
+    /** The selection the search key was computed for. */
+    presetId: z.string().max(64).nullable(),
+    excluded: excludedIds,
   }),
   z.object({
     type: z.literal('records'),
@@ -37,6 +42,20 @@ export const DataMessageSchema = z.discriminatedUnion('type', [
     waitMs: num,
     tokens: usageNum,
     dailyRemaining: usageNum,
+    sessionId,
+  }),
+  z.object({
+    type: z.literal('gate'),
+    runId: z.string().max(64),
+    page: num,
+    count: num,
+    pagesLeft: num,
+    dailyRemaining: num,
+  }),
+  z.object({
+    type: z.literal('notice'),
+    runId: z.string().max(64),
+    code: z.literal('session_reset'),
   }),
   z.object({
     type: z.literal('needs_reauth'),
@@ -47,6 +66,7 @@ export const DataMessageSchema = z.discriminatedUnion('type', [
     nextStartRow: num,
     searchKey: z.string().max(64),
     dailyRemaining: usageNum,
+    sessionId,
   }),
   z.object({
     type: z.literal('resume_refused'),
@@ -75,4 +95,9 @@ export const StoredRunSchema = z.object({
   /** Where a Resume continues from. */
   nextStartRow: num,
   searchKey: z.string().max(64).optional(),
+  /** Selected list type (null = the user's own DealMachine filters) and its unchecked filters. */
+  presetId: z.string().max(64).nullable().default(null),
+  excluded: excludedIds.default([]),
+  /** Server-side search session of a preset run, reused on resume. */
+  resultSessionId: sessionId.default(null),
 });

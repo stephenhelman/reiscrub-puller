@@ -1,4 +1,5 @@
 // Shadow DOM panel. All dynamic text goes through textContent; no innerHTML.
+import { PRESETS } from '../presets';
 import { PANEL_CSS } from './styles';
 
 export interface Confirm {
@@ -23,6 +24,13 @@ export interface ViewState {
   canResume: boolean;
   canClear: boolean;
   confirm: Confirm | null;
+  /** Selected preset id; null = the user's own DealMachine filters. */
+  listType: string | null;
+  listTypeLocked: boolean;
+  presetDescription: string | null;
+  presetFilters: { id: number; label: string; checked: boolean }[];
+  /** Preset mode, before the first page has revealed the true count. */
+  countPending: boolean;
 }
 
 export interface Handlers {
@@ -31,6 +39,8 @@ export interface Handlers {
   onResume(): void;
   onCopy(): void;
   onClear(): void;
+  onSelectPreset(id: string | null): void;
+  onToggleFilter(filterId: number, checked: boolean): void;
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -61,6 +71,28 @@ export function mountPanel(handlers: Handlers): { update(s: ViewState): void } {
   head.append(toggle);
 
   const body = el('div', 'body');
+
+  // List type: the user's own filters, or a built-in preset that they refine in DealMachine.
+  const listBox = el('div', 'list');
+  const selectId = 'reiscrub-list-type';
+  const selectLabel = el('label', 'lbl', 'List type');
+  selectLabel.htmlFor = selectId;
+  const select = el('select', 'sel');
+  select.id = selectId;
+  const addOption = (value: string, label: string) => {
+    const o = el('option', undefined, label);
+    o.value = value;
+    select.append(o);
+  };
+  addOption('', 'My DealMachine filters');
+  for (const p of PRESETS) addOption(p.id, p.name);
+  select.addEventListener('change', () => handlers.onSelectPreset(select.value === '' ? null : select.value));
+  const desc = el('div', 'desc');
+  const presetNote = el('div', 'hint', 'Starts from this preset. Filters you set in DealMachine override or add to it.');
+  const filterBox = el('div', 'filters');
+  listBox.append(selectLabel, select, desc, presetNote, filterBox);
+  const countHint = el('div', 'hint', 'Count shown after Collect starts');
+
   const rows = el('dl', 'rows');
   const values: Record<string, HTMLElement> = {};
   for (const [key, label] of [
@@ -107,7 +139,7 @@ export function mountPanel(handlers: Handlers): { update(s: ViewState): void } {
   const bCopy = mk('Copy', '', handlers.onCopy);
   const bClear = mk('Clear', '', handlers.onClear);
 
-  body.append(rows, bar, note, status, confirmBox, btns);
+  body.append(listBox, rows, countHint, bar, note, status, confirmBox, btns);
   root.append(head, body);
   shadow.append(style, root);
   document.documentElement.append(host);
@@ -147,8 +179,41 @@ export function mountPanel(handlers: Handlers): { update(s: ViewState): void } {
   confirmYes.addEventListener('click', () => confirmHandlers?.onConfirm());
   confirmNo.addEventListener('click', () => confirmHandlers?.onCancel());
 
+  let filterSig = '';
+  const checks = new Map<number, HTMLInputElement>();
+  function renderFilters(list: ViewState['presetFilters']): void {
+    const sig = list.map((f) => `${f.id}:${f.label}`).join('|');
+    if (sig !== filterSig) {
+      filterSig = sig;
+      checks.clear();
+      filterBox.replaceChildren();
+      for (const f of list) {
+        const row = el('label', 'chk');
+        const box = el('input');
+        box.type = 'checkbox';
+        box.addEventListener('change', () => handlers.onToggleFilter(f.id, box.checked));
+        row.append(box, el('span', undefined, f.label)); // label text via textContent
+        filterBox.append(row);
+        checks.set(f.id, box);
+      }
+    }
+    for (const f of list) {
+      const box = checks.get(f.id);
+      if (box) box.checked = f.checked;
+    }
+  }
+
   return {
     update(s) {
+      select.value = s.listType ?? '';
+      select.disabled = s.listTypeLocked;
+      desc.textContent = s.presetDescription ?? '';
+      desc.style.display = s.presetDescription ? 'block' : 'none';
+      presetNote.style.display = s.listType ? 'block' : 'none';
+      filterBox.style.display = s.listType ? 'grid' : 'none';
+      renderFilters(s.presetFilters);
+      for (const box of checks.values()) box.disabled = s.listTypeLocked;
+      countHint.style.display = s.countPending ? 'block' : 'none';
       values.captured!.textContent = s.captured ? 'Yes' : 'No';
       values.total!.textContent = fmt(s.count);
       values.pages!.textContent = fmt(s.pagesNeeded);

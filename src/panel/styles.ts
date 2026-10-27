@@ -15,6 +15,15 @@ export const PANEL_CSS = `
 .toggle { all: unset; cursor: pointer; padding: 0 6px; font-size: 14px; color: #9aa3b8; }
 .body { padding: 10px; display: grid; gap: 8px; }
 .collapsed .body { display: none; }
+.list { display: grid; gap: 4px; }
+.lbl { color: #9aa3b8; }
+.sel { box-sizing: border-box; width: 100%; padding: 4px 6px; border-radius: 6px; background: #1d212d; color: #e8eaf0; border: 1px solid #2c3142; font: inherit; }
+.sel:disabled { opacity: .5; }
+.sel:focus-visible, .chk input:focus-visible { outline: 2px solid #4f8cff; outline-offset: 1px; }
+.desc { display: none; color: #c9cfdf; }
+.hint { color: #9aa3b8; }
+.filters { display: none; gap: 3px; padding: 2px 0; }
+.chk { display: flex; gap: 6px; align-items: center; cursor: pointer; }
 .rows { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; }
 .rows dt { color: #9aa3b8; }
 .rows dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
