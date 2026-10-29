@@ -22,7 +22,7 @@ describe('built-in presets', () => {
     const p = PRESETS.find((x) => x.id === 'motivated-sellers');
     expect(p?.name).toBe('Motivated Sellers');
     expect(p?.description).toBe(
-      'Off-market single family, individually owned, under $300k value, 30%+ equity, last sold before 2021. Built for markets where most SFR is under $300k.',
+      'Off-market single family, individually owned, under $300k value, 30%+ equity, last sold more than 5 years ago. Built for markets where most SFR is under $300k.',
     );
     expect(p?.filters.map((f) => f.filterId)).toEqual([31, 37, 431, 29, 123, 112]);
   });

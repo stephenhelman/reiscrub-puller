@@ -192,7 +192,7 @@ const MOTIVATED_SELLERS: Preset = {
   id: 'motivated-sellers',
   name: 'Motivated Sellers',
   description:
-    'Off-market single family, individually owned, under $300k value, 30%+ equity, last sold before 2021. Built for markets where most SFR is under $300k.',
+    'Off-market single family, individually owned, under $300k value, 30%+ equity, last sold more than 5 years ago. Built for markets where most SFR is under $300k.',
   filters: [
     {
       "filterId": 31,
