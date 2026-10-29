@@ -162,9 +162,15 @@ export default defineContentScript({
         captured = { count: m.count, pageSize: m.pageSize, dailyRemaining: m.dailyRemaining };
         if (run?.state === 'needs_reauth') {
           freshCapture = { searchKey: m.searchKey };
-          status = searchMatches()
-            ? 'Search captured. Click Resume to continue.'
-            : 'The search changed. Restore the original search, or Clear to start over.';
+          if (searchMatches()) {
+            // The login token only lives ~60s, so a parked run carries on by itself as soon as
+            // the page issues a fresh search. Each park needs a new capture, so this can't loop.
+            status = 'Search captured. Resuming…';
+            render();
+            onResume();
+            return;
+          }
+          status = 'The search changed. Restore the original search, or Clear to start over.';
         } else if (!run) {
           status = 'Search captured. Click Collect.';
         }

@@ -5,10 +5,11 @@
 import { openMainChannel } from '@/src/bridge';
 import { Collector, type Auth, type Env } from '@/src/collector';
 import { CONFIG } from '@/src/config';
-import { debug } from '@/src/debug';
+import { DEBUG, debug } from '@/src/debug';
 import type { Usage } from '@/src/pacing';
 import { parseSearchResponse } from '@/src/response';
 import { getPreset } from '@/src/presets';
+import { authState, safeTarget, tokenKeys } from '@/src/trace';
 import { buildTemplate, type CapturedTemplate } from '@/src/run-setup';
 import { parseCommand } from '@/src/types';
 
@@ -225,8 +226,32 @@ export default defineContentScript({
 
     const matches = (url: string) => CONFIG.endpointPattern.test(url);
 
+    // --- debug trace -------------------------------------------------------
+    // With DEBUG on, log every request the page makes (host/path, status, whether its
+    // Authorization header is the one we hold, and the NAMES of token-like response keys).
+    // Used to find which call refreshes the login token. Never logs values.
+    function heldAuthorization(url: URL): string | undefined {
+      return authByHost.get(url.host)?.headers['authorization'];
+    }
+    function traceLog(method: string, url: URL, status: number, auth: string, json: unknown): void {
+      const keys = tokenKeys(json);
+      debug(`page request: ${method} ${safeTarget(url)} -> ${status} auth=${auth}${keys.length ? ` token-keys=${keys.join(',')}` : ''}`);
+    }
+
     // --- fetch -----------------------------------------------------------
     window.fetch = function (this: unknown, ...args: Parameters<typeof fetch>) {
+      let trace: { method: string; url: URL; auth: string } | null = null;
+      if (DEBUG) {
+        try {
+          const req = typeof Request !== 'undefined' && args[0] instanceof Request ? args[0] : null;
+          const url = new URL(req ? req.url : String(args[0]), location.href);
+          const h = new Headers(args[1]?.headers ?? req?.headers);
+          const method = (args[1]?.method ?? req?.method ?? 'GET').toUpperCase();
+          trace = { method, url, auth: authState(heldAuthorization(url), h.get('authorization') ?? undefined) };
+        } catch {
+          trace = null;
+        }
+      }
       let metaP: Promise<Meta | null> | null = null;
       try {
         metaP = describeFetch(args[0], args[1]);
@@ -234,6 +259,18 @@ export default defineContentScript({
         metaP = null;
       }
       const p = Reflect.apply(origFetch, this ?? window, args) as Promise<Response>;
+      if (trace) {
+        const t = trace;
+        p.then(async (res) => {
+          let json: unknown = null;
+          try {
+            json = await res.clone().json();
+          } catch {
+            /* not JSON */
+          }
+          traceLog(t.method, t.url, res.status, t.auth, json);
+        }).catch(() => {});
+      }
       if (metaP) {
         p.then(async (res) => {
           if (!res.ok) return;
@@ -304,7 +341,50 @@ export default defineContentScript({
       return origSetHeader.call(this, name, value);
     };
 
+    const xhrTrace = new WeakMap<XMLHttpRequest, { method: string; url: URL }>();
+    const origOpen2 = proto.open;
+    proto.open = function (this: XMLHttpRequest, ...args: unknown[]) {
+      if (DEBUG) {
+        try {
+          xhrTrace.set(this, { method: String(args[0]).toUpperCase(), url: new URL(String(args[1]), location.href) });
+        } catch {
+          /* ignore */
+        }
+      }
+      return Reflect.apply(origOpen2, this, args);
+    } as typeof proto.open;
+    const xhrHeaders = new WeakMap<XMLHttpRequest, Record<string, string>>();
+    const origSetHeader2 = proto.setRequestHeader;
+    proto.setRequestHeader = function (this: XMLHttpRequest, name: string, value: string) {
+      if (DEBUG && name.toLowerCase() === 'authorization') {
+        const h = xhrHeaders.get(this) ?? {};
+        h['authorization'] = value;
+        xhrHeaders.set(this, h);
+      }
+      return origSetHeader2.call(this, name, value);
+    };
+
     proto.send = function (this: XMLHttpRequest, body?: Document | XMLHttpRequestBodyInit | null) {
+      if (DEBUG) {
+        try {
+          const t = xhrTrace.get(this);
+          if (t) {
+            const auth = authState(heldAuthorization(t.url), xhrHeaders.get(this)?.['authorization']);
+            const xhr = this;
+            xhr.addEventListener('loadend', () => {
+              let json: unknown = null;
+              try {
+                json = xhr.responseType === 'json' ? xhr.response : JSON.parse(xhr.responseText);
+              } catch {
+                /* not JSON */
+              }
+              traceLog(t.method, t.url, xhr.status, auth, json);
+            });
+          }
+        } catch {
+          /* ignore */
+        }
+      }
       try {
         const st = xhrState.get(this);
         if (st) noteAuth(st.url, st.headers, this.withCredentials ? 'include' : 'same-origin');
