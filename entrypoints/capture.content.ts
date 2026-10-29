@@ -47,7 +47,11 @@ export default defineContentScript({
       for (const [k, v] of Object.entries(headers)) if (!BODY_HEADERS.has(k)) merged[k] = v;
       // Credentials mode is configuration, not a token: never downgrade it.
       const stronger = (CRED_RANK[credentials] ?? 0) > (CRED_RANK[cur.credentials] ?? 0);
-      authByHost.set(host, { headers: merged, credentials: stronger ? credentials : cur.credentials });
+      authByHost.set(host, {
+        headers: merged,
+        credentials: stronger ? credentials : cur.credentials,
+        seenAt: Date.now(),
+      });
     }
 
     const isApiRequest = (url: string) => {

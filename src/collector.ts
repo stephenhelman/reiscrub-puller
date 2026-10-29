@@ -3,6 +3,7 @@
 import { CONFIG } from './config';
 import { debug } from './debug';
 import { backoffMs, isThrottled, orgResetWaitMs, shortDelayMs, type Usage } from './pacing';
+import { describeAuth } from './token-age';
 import { parseSearchResponse, type ParsedResponse } from './response';
 import type { DataMessage, DoneReason, PuRecord } from './types';
 
@@ -26,6 +27,8 @@ export interface Template {
 export interface Auth {
   headers: Record<string, string>;
   credentials: RequestCredentials;
+  /** When the page last sent a request carrying these headers (ms epoch). Debug only. */
+  seenAt?: number;
 }
 
 export interface Env {
@@ -223,6 +226,7 @@ export class Collector {
           `tokens ${tokensBefore ?? '?'}→${usage?.userTokensRemaining ?? '?'}`,
           `org/min=${usage?.orgRemainingThisMinute ?? '?'} daily=${usage?.dailyRemaining ?? '?'}`,
           `wait=${wait}ms t+${((Date.now() - started) / 1000).toFixed(1)}s`,
+          this.authNote(),
         );
 
         if (more && !gated) {
@@ -256,7 +260,7 @@ export class Collector {
         reason = 'stopped';
       } else if (e instanceof AuthError) {
         needsReauth = true;
-        debug('auth rejected (401/403): parked for re-auth at row', startRow);
+        debug('auth rejected (401/403): parked for re-auth at row', startRow, this.authNote());
       } else {
         reason = 'error';
         message = e instanceof FatalError ? e.message : 'Unexpected error while collecting';
@@ -291,6 +295,11 @@ export class Collector {
       dailyRemaining: usage?.dailyRemaining ?? null,
     });
     return usage;
+  }
+
+  private authNote(): string {
+    const a = this.getAuth();
+    return describeAuth(a.headers, a.seenAt ?? null, Date.now());
   }
 
   private awaitProceed(signal: AbortSignal): Promise<number | null> {
