@@ -18,6 +18,15 @@ describe('built-in presets', () => {
     expect(PresetListSchema.safeParse(PRESETS).success).toBe(true);
   });
 
+  it('motivated-sellers is present with its description and 6 filters', () => {
+    const p = PRESETS.find((x) => x.id === 'motivated-sellers');
+    expect(p?.name).toBe('Motivated Sellers');
+    expect(p?.description).toBe(
+      'Off-market single family, individually owned, under $300k value, 30%+ equity, last sold before 2021. Built for markets where most SFR is under $300k.',
+    );
+    expect(p?.filters.map((f) => f.filterId)).toEqual([31, 37, 431, 29, 123, 112]);
+  });
+
   it('cash-buyers is present with its description and 5 filters', () => {
     const p = PRESETS.find((x) => x.id === 'cash-buyers');
     expect(p?.name).toBe('Cash Buyers');

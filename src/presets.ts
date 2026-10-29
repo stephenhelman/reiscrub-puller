@@ -16,11 +16,6 @@ export interface Preset {
   policyFilters: never[];
 }
 
-// SLOT: "motivated-sellers" (name "Motivated Sellers"), description:
-//   "Off-market single family, individually owned, under $300k value, 30%+ equity, last sold
-//    before 2021. Built for markets where most SFR is under $300k."
-// Add its captured filters here and append it to PRESETS below.
-
 const CASH_BUYERS: Preset = {
   id: 'cash-buyers',
   name: 'Cash Buyers',
@@ -193,7 +188,506 @@ const CASH_BUYERS: Preset = {
   policyFilters: [],
 };
 
-export const PRESETS: readonly Preset[] = [CASH_BUYERS];
+const MOTIVATED_SELLERS: Preset = {
+  id: 'motivated-sellers',
+  name: 'Motivated Sellers',
+  description:
+    'Off-market single family, individually owned, under $300k value, 30%+ equity, last sold before 2021. Built for markets where most SFR is under $300k.',
+  filters: [
+    {
+      "filterId": 31,
+      "slug": "estimated_value",
+      "defaultColumnAlias": "estimated_value",
+      "label": "Estimated Value",
+      "description": "Estimated current market value of the property in dollars. Uses the most recent automated valuation available, falling back to calculated or assessed values when no professional valuation exists. This is DealMachine's headline value figure and the base for the equity and loan-to-value calculations.",
+      "useCaseDescriptions": "Price-band any search: 'homes under 300k', 'properties worth 500k to 1M'. Investors use it to match deals to their buy box, screen direct mail lists by price point, and gut-check spreads against last_sale_price and estimated_repair_cost. It is an estimate, not an appraisal, so favor ranges over exact cutoffs. For what the property actually traded for, use last_sale_price; for the current ask on listed homes, use mls_current_listing_price.",
+      "type": "NUMBER",
+      "subtype": "LARGE_MONEY",
+      "source_type": "properties",
+      "options": null,
+      "data": {
+        "value": 300000
+      },
+      "fieldGroup": {
+        "id": 30,
+        "title": "Estimated Value",
+        "slug": "price",
+        "pinned": true,
+        "featured": false
+      },
+      "displayOrder": null,
+      "defaultOperation": null,
+      "isPremiumFilter": false,
+      "aliases": [
+        "value",
+        "estimated value",
+        "market value",
+        "AVM",
+        "worth"
+      ],
+      "searchTerms": [
+        "value",
+        "price",
+        "valuation",
+        "property value"
+      ],
+      "optionSearchMetadata": null,
+      "searchMetadata": {
+        "aliases": [
+          "value",
+          "estimated value",
+          "market value",
+          "AVM",
+          "worth"
+        ],
+        "searchTerms": [
+          "value",
+          "price",
+          "valuation",
+          "property value"
+        ],
+        "options": null
+      },
+      "bigQueryDestinationTable": "dm_analytics.property_wide_facts",
+      "bigQueryDestinationTableColumn": "estimated_value",
+      "operation": "less_than_or_equal"
+    },
+    {
+      "filterId": 37,
+      "slug": "estimated_equity_percentage",
+      "defaultColumnAlias": "estimated_equity_percentage",
+      "label": "Estimated Equity Percentage",
+      "description": "Estimated equity as a percent of value: (estimated_value minus estimated remaining loan balances) divided by estimated_value, times 100. Loan balances are estimates amortized from recorded county mortgage terms, not payoff statements. Use this for 'high equity percentage' or 'X% equity' requests on property searches.",
+      "useCaseDescriptions": "The standard way investors express equity targets: '50%+ equity', 'at least 70 percent equity', or low-equity screens (under 10 to 20 percent) for short-sale and subject-to hunting. High percentage plus long ownership usually means room to negotiate. For a dollar figure use estimated_equity_amount. The rough inverse is estimated_loan_to_value_percentage (about 100 minus equity percent). On PEOPLE searches, mortgage_estimated_available_equity_amount is the consumer-data model instead.",
+      "type": "NUMBER",
+      "subtype": "PERCENT",
+      "source_type": "properties",
+      "options": null,
+      "data": {
+        "value": 30
+      },
+      "fieldGroup": {
+        "id": 6,
+        "title": "Equity",
+        "slug": "equity_and_value_info",
+        "pinned": true,
+        "featured": false
+      },
+      "displayOrder": null,
+      "defaultOperation": null,
+      "isPremiumFilter": false,
+      "aliases": [
+        "equity percent",
+        "equity percentage",
+        "equity ratio",
+        "percent equity"
+      ],
+      "searchTerms": [
+        "equity",
+        "high equity",
+        "underwater",
+        "equity share"
+      ],
+      "optionSearchMetadata": null,
+      "searchMetadata": {
+        "aliases": [
+          "equity percent",
+          "equity percentage",
+          "equity ratio",
+          "percent equity"
+        ],
+        "searchTerms": [
+          "equity",
+          "high equity",
+          "underwater",
+          "equity share"
+        ],
+        "options": null
+      },
+      "bigQueryDestinationTable": "dm_analytics.property_wide_facts",
+      "bigQueryDestinationTableColumn": "estimated_equity_percentage",
+      "operation": "greater_than_or_equal"
+    },
+    {
+      "filterId": 431,
+      "slug": "ownership_entity_type",
+      "defaultColumnAlias": "ownership_entity_type",
+      "label": "Ownership Entity Type",
+      "description": "Categorical type of the owning entity from county ownership records: individual, corporate, trust, bank, or government. Use this when the user names a specific entity kind or wants to include/exclude several at once. For simple boolean requests prefer the dedicated flags: is_corporate_owned for companies, is_owned_by_trust for trusts, is_bank_owned for lender-held REO.",
+      "useCaseDescriptions": "Use it when a user distinguishes among entity kinds: \"government owned parcels\", \"individually owned only, no companies or trusts\", \"banks and corporations\". Multi-select, so it handles exclusion lists cleanly (for example, everything except government and bank owned). Disambiguation: \"LLC owned\" or \"company owned\" alone maps to is_corporate_owned; \"trust owned\" maps to is_owned_by_trust; \"REO\" or \"bank owned\" as a distress concept maps to is_bank_owned rather than the bank option here. Reach for this field when the request needs the full category breakdown rather than one yes/no flag.",
+      "type": "MULTI_SELECT",
+      "subtype": null,
+      "source_type": "properties",
+      "options": [
+        {
+          "id": 4,
+          "label": "Bank"
+        },
+        {
+          "id": 2,
+          "label": "Corporation"
+        },
+        {
+          "id": 5,
+          "label": "Government"
+        },
+        {
+          "id": 1,
+          "label": "Individual"
+        },
+        {
+          "id": 3,
+          "label": "Trust"
+        }
+      ],
+      "data": {
+        "selectedItems": [
+          {
+            "id": 1,
+            "label": "Individual"
+          }
+        ]
+      },
+      "fieldGroup": {
+        "id": 8,
+        "title": "Ownership",
+        "slug": "owner_type",
+        "pinned": true,
+        "featured": false
+      },
+      "displayOrder": null,
+      "defaultOperation": null,
+      "isPremiumFilter": false,
+      "aliases": [
+        "entity type",
+        "owner type",
+        "ownership type",
+        "owner category"
+      ],
+      "searchTerms": [
+        "entity",
+        "individual",
+        "government owned",
+        "ownership structure"
+      ],
+      "optionSearchMetadata": null,
+      "searchMetadata": {
+        "aliases": [
+          "entity type",
+          "owner type",
+          "ownership type",
+          "owner category"
+        ],
+        "searchTerms": [
+          "entity",
+          "individual",
+          "government owned",
+          "ownership structure"
+        ],
+        "options": null
+      },
+      "bigQueryDestinationTable": "dm_analytics.property_wide_facts",
+      "bigQueryDestinationTableColumn": "property_ownership_entity_type_id",
+      "bigQueryReferenceDisplayColumn": "property_ownership_entity_type_name",
+      "operation": "contains_any"
+    },
+    {
+      "filterId": 29,
+      "slug": "property_type_id",
+      "defaultColumnAlias": "property_type",
+      "label": "Property Type",
+      "description": "DealMachine's normalized property type, mapped from county assessor use codes. Options include Single Family, Townhouse, Condominium, Mobile Home, Multi Family, Vacant Land, Co-Op, Apartment, Office, Retail, Industrial, Hospitality, Healthcare, Mixed Use, Special Purpose, Government / Institutional, Agriculture, Development Site, and Other. The main type filter for property searches.",
+      "useCaseDescriptions": "Use it for any property-category request: 'single family homes' (Single Family), 'vacant land' or 'lots' (Vacant Land), 'mobile homes' (Mobile Home), 'commercial' (Office, Retail, Industrial, and related types). For 'duplex', 'triplex', or any unit-count request, use num_units instead of or alongside Multi Family, since the type alone does not separate a duplex from a large apartment building. For assessor tax categories like Exempt use property_class.",
+      "type": "MULTI_SELECT",
+      "subtype": null,
+      "source_type": "properties",
+      "options": [
+        {
+          "id": 19,
+          "label": "Agriculture"
+        },
+        {
+          "id": 9,
+          "label": "Apartment"
+        },
+        {
+          "id": 8,
+          "label": "Co-Op"
+        },
+        {
+          "id": 3,
+          "label": "Condominium"
+        },
+        {
+          "id": 20,
+          "label": "Development Site"
+        },
+        {
+          "id": 18,
+          "label": "Government / Institutional"
+        },
+        {
+          "id": 15,
+          "label": "Healthcare"
+        },
+        {
+          "id": 14,
+          "label": "Hospitality"
+        },
+        {
+          "id": 13,
+          "label": "Industrial"
+        },
+        {
+          "id": 16,
+          "label": "Mixed Use"
+        },
+        {
+          "id": 4,
+          "label": "Mobile Home"
+        },
+        {
+          "id": 5,
+          "label": "Multi Family"
+        },
+        {
+          "id": 11,
+          "label": "Office"
+        },
+        {
+          "id": 10,
+          "label": "Other"
+        },
+        {
+          "id": 12,
+          "label": "Retail"
+        },
+        {
+          "id": 1,
+          "label": "Single Family"
+        },
+        {
+          "id": 17,
+          "label": "Special Purpose"
+        },
+        {
+          "id": 2,
+          "label": "Townhouse"
+        },
+        {
+          "id": 6,
+          "label": "Vacant Land"
+        }
+      ],
+      "data": {
+        "selectedItems": [
+          {
+            "id": 1,
+            "label": "Single Family"
+          }
+        ]
+      },
+      "fieldGroup": {
+        "id": 29,
+        "title": "Property Type",
+        "slug": "property_type",
+        "pinned": true,
+        "featured": false
+      },
+      "displayOrder": null,
+      "defaultOperation": null,
+      "isPremiumFilter": false,
+      "aliases": [
+        "property type",
+        "single family",
+        "vacant land",
+        "mobile home",
+        "commercial",
+        "condo"
+      ],
+      "searchTerms": [
+        "type",
+        "category",
+        "residential",
+        "land"
+      ],
+      "optionSearchMetadata": null,
+      "searchMetadata": {
+        "aliases": [
+          "property type",
+          "single family",
+          "vacant land",
+          "mobile home",
+          "commercial",
+          "condo"
+        ],
+        "searchTerms": [
+          "type",
+          "category",
+          "residential",
+          "land"
+        ],
+        "options": null
+      },
+      "bigQueryDestinationTable": "dm_analytics.property_wide_facts",
+      "bigQueryDestinationTableColumn": "property_type_id",
+      "bigQueryReferenceDisplayColumn": "property_type_name",
+      "operation": "contains_any"
+    },
+    {
+      "filterId": 123,
+      "slug": "last_sale_date",
+      "defaultColumnAlias": "last_sale_date",
+      "label": "Last sale date",
+      "description": "Date of the property's most recent recorded sale, from county deed records and MLS sale data combined. Marks the start of the current owner's tenure.",
+      "useCaseDescriptions": "Ownership-length screens are bread and butter: 'owned more than 10 years' finds equity-rich, long-tenure sellers; 'sold in the last 6 months' finds new owners and disqualifies them from motivated-seller outreach. Also anchors comp recency when pulling comparable sales. Users say 'last sold', 'purchase date', 'owned since'. The boolean shortcut for the past year is is_recently_sold; the price paid is last_sale_price.",
+      "type": "DATE",
+      "subtype": null,
+      "source_type": "properties",
+      "options": null,
+      "data": {
+        "relativeTime": {
+          "comparison": "greater_than",
+          "value": 5,
+          "unit": "years",
+          "direction": "ago"
+        }
+      },
+      "fieldGroup": {
+        "id": 12,
+        "title": "Sale History",
+        "slug": "sale_history",
+        "pinned": true,
+        "featured": false
+      },
+      "displayOrder": null,
+      "defaultOperation": null,
+      "isPremiumFilter": false,
+      "aliases": [
+        "sale date",
+        "last sold",
+        "purchase date",
+        "date sold"
+      ],
+      "searchTerms": [
+        "sold",
+        "sale",
+        "ownership length",
+        "tenure"
+      ],
+      "optionSearchMetadata": null,
+      "searchMetadata": {
+        "aliases": [
+          "sale date",
+          "last sold",
+          "purchase date",
+          "date sold"
+        ],
+        "searchTerms": [
+          "sold",
+          "sale",
+          "ownership length",
+          "tenure"
+        ],
+        "options": null
+      },
+      "bigQueryDestinationTable": "dm_analytics.property_wide_facts",
+      "bigQueryDestinationTableColumn": "last_sale_date",
+      "operation": "relative_time"
+    },
+    {
+      "filterId": 112,
+      "slug": "mls_property_market_status",
+      "defaultColumnAlias": "market_status",
+      "label": "Market status",
+      "description": "Categorical status of the property's latest known MLS record, from MLS feeds: Active, Pending, Contingent, Recently Sold, Expired Listings, or Off Market. The Off Market option only reflects what the latest MLS record says and misses the large majority of never-listed homes. For 'off market properties' requests, use is_off_market instead; this field is for segmenting listed inventory by stage.",
+      "useCaseDescriptions": "Segment listed inventory by stage: live actives, deals under contract (Pending, Contingent), listings that failed (Expired Listings), and MLS-recorded sales (Recently Sold). Handy when a user wants several statuses at once ('active or pending listings'). Each status also exists as a boolean: is_mls_active, is_mls_pending, is_mls_contingent, is_mls_listing_expired, is_recently_sold. Never answer 'off market' requests with this field's Off Market option; that phrasing always maps to is_off_market.",
+      "type": "MULTI_SELECT",
+      "subtype": null,
+      "source_type": "properties",
+      "options": [
+        {
+          "id": 1,
+          "label": "Active"
+        },
+        {
+          "id": 3,
+          "label": "Contingent"
+        },
+        {
+          "id": 5,
+          "label": "Expired Listings"
+        },
+        {
+          "id": 6,
+          "label": "Off Market"
+        },
+        {
+          "id": 2,
+          "label": "Pending"
+        },
+        {
+          "id": 4,
+          "label": "Recently Sold"
+        }
+      ],
+      "data": {
+        "selectedItems": [
+          {
+            "id": 6,
+            "label": "Off Market"
+          }
+        ]
+      },
+      "fieldGroup": {
+        "id": 11,
+        "title": "Listing",
+        "slug": "mls_info",
+        "pinned": true,
+        "featured": false
+      },
+      "displayOrder": null,
+      "defaultOperation": null,
+      "isPremiumFilter": false,
+      "aliases": [
+        "MLS status",
+        "listing status",
+        "market status"
+      ],
+      "searchTerms": [
+        "MLS",
+        "listing",
+        "status",
+        "active",
+        "pending"
+      ],
+      "optionSearchMetadata": null,
+      "searchMetadata": {
+        "aliases": [
+          "MLS status",
+          "listing status",
+          "market status"
+        ],
+        "searchTerms": [
+          "MLS",
+          "listing",
+          "status",
+          "active",
+          "pending"
+        ],
+        "options": null
+      },
+      "bigQueryDestinationTable": "dm_analytics.property_wide_facts",
+      "bigQueryDestinationTableColumn": "mls_property_market_status_id",
+      "bigQueryReferenceDisplayColumn": "mls_property_market_status_name",
+      "operation": "contains_any"
+    }
+  ],
+  filterGroups: [],
+  policyFilters: [],
+};
+
+export const PRESETS: readonly Preset[] = [MOTIVATED_SELLERS, CASH_BUYERS];
 
 export function getPreset(id: string | null): Preset | null {
   return id === null ? null : (PRESETS.find((p) => p.id === id) ?? null);
