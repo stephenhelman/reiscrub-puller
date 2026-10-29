@@ -1,22 +1,37 @@
 // Debug-only: how close the replay credentials are to expiring. Reads the `exp`/`iat` claims
 // of a Bearer JWT and returns plain seconds; the token itself is never returned or logged.
 
-function claims(headers: Record<string, string>): { exp?: number; iat?: number } | null {
-  const raw = Object.entries(headers).find(([k]) => k.toLowerCase() === 'authorization')?.[1];
+export interface JwtClaims {
+  exp?: number;
+  iat?: number;
+  iss?: string;
+}
+
+/** Claims of a JWT, or of an `Authorization` value such as `Bearer <jwt>`. Null if unreadable. */
+export function jwtClaims(raw: string | undefined): JwtClaims | null {
   const jwt = raw?.replace(/^Bearer\s+/i, '').split('.');
   if (!jwt || jwt.length !== 3 || !jwt[1]) return null;
   try {
     const b64 = jwt[1].replace(/-/g, '+').replace(/_/g, '/');
     const o: unknown = JSON.parse(atob(b64.padEnd(Math.ceil(b64.length / 4) * 4, '=')));
     if (typeof o !== 'object' || o === null) return null;
-    const { exp, iat } = o as Record<string, unknown>;
+    const { exp, iat, iss } = o as Record<string, unknown>;
     return {
       ...(typeof exp === 'number' ? { exp } : {}),
       ...(typeof iat === 'number' ? { iat } : {}),
+      ...(typeof iss === 'string' ? { iss } : {}),
     };
   } catch {
     return null;
   }
+}
+
+export function authorizationOf(headers: Record<string, string>): string | undefined {
+  return Object.entries(headers).find(([k]) => k.toLowerCase() === 'authorization')?.[1];
+}
+
+function claims(headers: Record<string, string>): JwtClaims | null {
+  return jwtClaims(authorizationOf(headers));
 }
 
 /** e.g. "auth: expires in 212s, issued 88s ago, last seen from page 41s ago". */

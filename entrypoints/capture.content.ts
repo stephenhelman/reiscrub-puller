@@ -9,6 +9,8 @@ import { DEBUG, debug } from '@/src/debug';
 import type { Usage } from '@/src/pacing';
 import { parseSearchResponse } from '@/src/response';
 import { getPreset } from '@/src/presets';
+import { isSessionTokenUrl, pickAuthorization, sessionJwt } from '@/src/clerk';
+import { describeAuth } from '@/src/token-age';
 import { authState, safeTarget, tokenKeys } from '@/src/trace';
 import { buildTemplate, type CapturedTemplate } from '@/src/run-setup';
 import { parseCommand } from '@/src/types';
@@ -40,6 +42,8 @@ export default defineContentScript({
     const BODY_HEADERS = new Set(['content-type', 'content-length']);
     const CRED_RANK: Record<string, number> = { omit: 0, 'same-origin': 1, include: 2 };
     const authByHost = new Map<string, Auth>();
+    // Newest session JWT the page itself minted via Clerk (see src/clerk.ts). Memory-only.
+    let clerkJwt: string | null = null;
 
     function noteAuth(url: string, headers: Record<string, string>, credentials: RequestCredentials): void {
       const host = new URL(url).host;
@@ -97,7 +101,12 @@ export default defineContentScript({
     const collector = new Collector(
       boundFetch,
       (m) => channel.sendData(m),
-      () => (template && authByHost.get(new URL(template.url).host)) || { headers: {}, credentials: 'include' },
+      () => {
+        const base = (template && authByHost.get(new URL(template.url).host)) || { headers: {}, credentials: 'include' };
+        const held = base.headers['authorization'];
+        const pick = pickAuthorization(held, clerkJwt);
+        return pick && pick !== held ? { ...base, headers: { ...base.headers, authorization: pick } } : base;
+      },
       env,
     );
 
@@ -241,10 +250,18 @@ export default defineContentScript({
     // --- fetch -----------------------------------------------------------
     window.fetch = function (this: unknown, ...args: Parameters<typeof fetch>) {
       let trace: { method: string; url: URL; auth: string } | null = null;
-      if (DEBUG) {
+      let tokenCall = false;
+      let reqUrl: URL | null = null;
+      const req = typeof Request !== 'undefined' && args[0] instanceof Request ? args[0] : null;
+      try {
+        reqUrl = new URL(req ? req.url : String(args[0]), location.href);
+        tokenCall = isSessionTokenUrl(reqUrl, CONFIG.apiHostSuffix);
+      } catch {
+        reqUrl = null;
+      }
+      if (DEBUG && reqUrl) {
+        const url = reqUrl;
         try {
-          const req = typeof Request !== 'undefined' && args[0] instanceof Request ? args[0] : null;
-          const url = new URL(req ? req.url : String(args[0]), location.href);
           const h = new Headers(args[1]?.headers ?? req?.headers);
           const method = (args[1]?.method ?? req?.method ?? 'GET').toUpperCase();
           trace = { method, url, auth: authState(heldAuthorization(url), h.get('authorization') ?? undefined) };
@@ -259,6 +276,15 @@ export default defineContentScript({
         metaP = null;
       }
       const p = Reflect.apply(origFetch, this ?? window, args) as Promise<Response>;
+      if (tokenCall) {
+        p.then(async (res) => {
+          if (!res.ok) return;
+          const jwt = sessionJwt(await res.clone().json());
+          if (!jwt) return;
+          clerkJwt = jwt;
+          debug('page minted a new session token;', describeAuth({ authorization: `Bearer ${jwt}` }, null, Date.now()));
+        }).catch(() => {});
+      }
       if (trace) {
         const t = trace;
         p.then(async (res) => {

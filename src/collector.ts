@@ -3,7 +3,7 @@
 import { CONFIG } from './config';
 import { debug } from './debug';
 import { backoffMs, isThrottled, orgResetWaitMs, shortDelayMs, type Usage } from './pacing';
-import { describeAuth } from './token-age';
+import { authorizationOf, describeAuth } from './token-age';
 import { parseSearchResponse, type ParsedResponse } from './response';
 import type { DataMessage, DoneReason, PuRecord } from './types';
 
@@ -297,6 +297,17 @@ export class Collector {
     return usage;
   }
 
+  /** True once the Authorization header differs from `stale`; false if none arrives in time. */
+  private async awaitNewAuth(stale: string | undefined): Promise<boolean> {
+    const signal = this.ctl?.signal;
+    const until = Date.now() + CONFIG.pacing.authRefreshWaitMs;
+    for (;;) {
+      if (authorizationOf(this.getAuth().headers) !== stale) return true;
+      if (!signal || signal.aborted || Date.now() >= until) return false;
+      await sleep(Math.min(250, until - Date.now()), signal);
+    }
+  }
+
   private authNote(): string {
     const a = this.getAuth();
     return describeAuth(a.headers, a.seenAt ?? null, Date.now());
@@ -323,6 +334,8 @@ export class Collector {
     runId: string,
     hooks: { retry: (ms: number) => Promise<void>; gate: () => Promise<void> },
   ): Promise<ParsedResponse> {
+    let waitedForAuth = false;
+    let sentAuth: string | undefined;
     for (let attempt = 0; ; attempt++) {
       const body = JSON.stringify({
         ...tpl.body,
@@ -333,6 +346,7 @@ export class Collector {
       let res: Response | null = null;
       try {
         const auth = this.getAuth(); // freshest headers at send time
+        sentAuth = authorizationOf(auth.headers);
         res = await this.fetchFn(tpl.url, {
           method: tpl.method,
           headers: { ...auth.headers, ...tpl.bodyHeaders },
@@ -355,7 +369,15 @@ export class Collector {
         return parsed;
       }
 
-      if (res && (res.status === 401 || res.status === 403)) throw new AuthError();
+      if (res && (res.status === 401 || res.status === 403)) {
+        // The login token lives about a minute and the page mints a new one on its own schedule:
+        // give it a moment before parking, and retry at once if a newer token turns up.
+        if (!waitedForAuth) {
+          waitedForAuth = true;
+          if (await this.awaitNewAuth(sentAuth)) continue;
+        }
+        throw new AuthError();
+      }
 
       if (
         res &&

@@ -12,6 +12,8 @@ export interface PacingConfig {
   lowOrgRemaining: number;
   /** Retries on HTTP 429 / 5xx / network error before the run stops. */
   maxRetries: number;
+  /** After a 401, how long to wait for the page to mint a newer login token before parking. */
+  authRefreshWaitMs: number;
 }
 
 export interface AppConfig {
@@ -48,6 +50,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     lowUserTokens: 1,
     lowOrgRemaining: 2,
     maxRetries: 3,
+    authRefreshWaitMs: 15_000,
   },
   payloadHeader: 'REISCRUB:v1:dealmachine',
   limits: {

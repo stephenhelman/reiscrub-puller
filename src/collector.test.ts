@@ -10,6 +10,7 @@ import type { DataMessage } from './types';
 beforeAll(() => {
   CONFIG.pacing.minDelayMs = 0;
   CONFIG.pacing.maxDelayMs = 0;
+  CONFIG.pacing.authRefreshWaitMs = 100;
 });
 
 const URL_ = 'https://api.dealmachine.com/api/search/map-properties';
@@ -234,5 +235,48 @@ describe('resume with a preset', () => {
     expect(h.messages.filter((m) => m.type === 'notice')).toHaveLength(1);
     expect(h.ids().filter((i) => overlap.includes(i))).toEqual([]); // dedupe absorbed the overlap
     expect(h.done()?.reason).toBe('complete');
+  });
+});
+
+describe('login token expiry', () => {
+  function expiring(refreshAfterMs: number | null) {
+    let current = 'Bearer old';
+    if (refreshAfterMs !== null) setTimeout(() => (current = 'Bearer new'), refreshAfterMs);
+    const sentWith: string[] = [];
+    const fetchFn = (async (_u: unknown, init?: RequestInit) => {
+      const h = (init?.headers as Record<string, string>)['authorization'] ?? '';
+      sentWith.push(h);
+      if (h === 'Bearer old') return new Response('expired', { status: 401 });
+      return Response.json({
+        count: 10,
+        rows: [{ internal_property_id: 1, displayLine1: 'a', displayLine2: 'b' }],
+        pageSize: 25,
+      });
+    }) as typeof fetch;
+    const messages: DataMessage[] = [];
+    const collector = new Collector(
+      fetchFn,
+      (m) => messages.push(m),
+      () => ({ headers: { authorization: current }, credentials: 'include' }),
+      { visible: () => true, whenVisible: async () => {} },
+    );
+    return { collector, messages, sentWith };
+  }
+  const go = (c: Collector) =>
+    c.run(buildTemplate(captured(), null, [])!, { runId: 'r', startRow: 0, page: 0, maxPages: null, ...run });
+
+  it('retries at once when the page mints a newer token shortly after a 401', async () => {
+    const t = expiring(20);
+    await go(t.collector);
+    expect(t.sentWith).toEqual(['Bearer old', 'Bearer new']);
+    expect(t.messages.some((m) => m.type === 'needs_reauth')).toBe(false);
+    expect(t.messages.find((m) => m.type === 'done')).toMatchObject({ reason: 'complete' });
+  });
+
+  it('parks for re-auth when no newer token arrives', async () => {
+    const t = expiring(null);
+    await go(t.collector);
+    expect(t.sentWith).toEqual(['Bearer old']);
+    expect(t.messages.some((m) => m.type === 'needs_reauth')).toBe(true);
   });
 });
